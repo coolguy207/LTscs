@@ -22,7 +22,6 @@ def onMouseRelease(app, x, y):
     app.cookieR=100
 
 
-
 #view the product just shapes  
 def redrawAll(app):
         drawCircle(200,200,app.cookieR, fill='saddlebrown')
