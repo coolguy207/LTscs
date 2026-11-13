@@ -1,34 +1,32 @@
 from scs import *
 
-#MODEL - initialize state for 2 shapes stored in variables
+#modle were you keep vareables 
 def onAppStart(app):
-    app.rectX = 1050/2
-    app.rectY = 700/2
-    app.rectW = 500
-    app.rectH = 200
-    app.rectFill = 'red'
-    app.angle = 0
-    
-    app.circleX = 1050/2
-    app.circleY = 700/2
-    app.circleR = 100
+    app.cookieR=100
+    app.score=0
+    app.scoreX=54
 
-#CONTROLLER - automatic updates
-def onStep(app):
-    app.angle += 1
+#controler were you chang them/ interact with code 
 
-#CONTROLLER - interactive updates
-def onMousePress(app, mouseX, mouseY):
-    app.circleX = mouseX
-    app.circleY = mouseY
-    app.rectFill = 'orange' if app.rectFill == 'red' else 'red'
+def cheackhit(app, x, y):
+    if (abs(200-x )<app.cookieR and abs(200-y )<app.cookieR):
+        print("hit")
+        app.cookieR-=10
+        app.score+=1
+def onMousePress(app, x, y):
+    cheackhit(app, x,y)
+    app.scoreX right =
 
-#VIEW - only drawing, no state changes
+        
+def onMouseRelease(app, x, y):
+    app.cookieR=100
+
+
+#view the product just shapes  
 def redrawAll(app):
-    drawRect(app.rectX, app.rectY, app.rectW, app.rectH,
-             fill=app.rectFill, align='center', rotateAngle=app.angle)
-    drawCircle(app.circleX, app.circleY, app.circleR, fill='blue')
-
+        drawCircle(200,200,app.cookieR, fill='saddlebrown')
+        drawLabel(app.score, app.scoreX, 32, size=80)
 def main():
-    runApp(1050,700)
+    runApp(400,400)
+    
 main()
