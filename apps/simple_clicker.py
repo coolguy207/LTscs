@@ -16,7 +16,6 @@ def cheackhit(app, x, y):
 def onMousePress(app, x, y):
     cheackhit(app, x,y)
     app.scoreX right =
-
         
 def onMouseRelease(app, x, y):
     app.cookieR=100
