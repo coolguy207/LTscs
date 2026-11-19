@@ -342,6 +342,7 @@ _fullscreen_orig_h = None
 _fullscreen_orig_style_w = None
 _fullscreen_orig_style_h = None
 _hud_offscreen = None   # offscreen 2D canvas where the 2D app draws in HUD mode
+_app_wrapper = None
 _hud_2d_renderer = None  # 2D renderer for the offscreen canvas
 _hud_3d_kind = None     # 'webgl2' or 'webgpu' when in HUD mode
 # Both, with a flag: HUD texture (default, works everywhere) vs HTML-in-Canvas
@@ -594,6 +595,50 @@ def _find_canvas():
     _canvas = c
     return c
 
+def _ensure_app_wrapper():
+    global _app_wrapper
+    _c = _find_canvas()
+    if _c is None:
+        return None
+    try:
+        _p = _c.parentElement
+        if _p is not None and _p.id == 'scs-app-wrapper':
+            _app_wrapper = _p
+            return _p
+    except Exception:
+        pass
+    if _app_wrapper is not None and _app_wrapper.parentNode is not None:
+        try:
+            if _c.parentNode is not _app_wrapper:
+                _app_wrapper.appendChild(_c)
+        except Exception:
+            pass
+        return _app_wrapper
+    # FIX: wrapper never existed, so _toggle_fullscreen() always hit
+    # `if _w is None: return` and the click did nothing. Create it.
+    try:
+        _parent = _c.parentNode
+        if _parent is None:
+            return None
+        _w = document.createElement('div')
+        _w.id = 'scs-app-wrapper'
+        try:
+            _w.style.position = 'relative'
+            _w.style.display = 'inline-block'
+            _w.style.margin = '0'
+            _w.style.padding = '0'
+            _w.style.lineHeight = '0'
+        except Exception:
+            pass
+        try:
+            _parent.insertBefore(_w, _c)
+            _w.appendChild(_c)
+        except Exception:
+            return None
+        _app_wrapper = _w
+        return _w
+    except Exception:
+        return None
 
 def _dpr():
     try:
@@ -1112,32 +1157,6 @@ def _ensure_resize_observer():
             pass
     except Exception:
         pass
-
-def _ensure_app_wrapper():
-    # v30: NON-INVASIVE for apps already in the wild in standard web pages.
-    # Do NOT create a div, do NOT move the canvas, do NOT inject CSS.
-    # Moving the canvas or injecting !important fullscreen CSS breaks the
-    # host page's own layout (flex/grid, responsive rules, other content).
-    # HUD controls are drawn INSIDE the canvas, so fullscreening the canvas
-    # itself keeps them visible. Use the existing parent ONLY if it holds
-    # just the canvas (a dedicated container); otherwise use the canvas.
-    try:
-        _c = _find_canvas()
-        if _c is None:
-            return None
-        _p = _c.parentElement
-        if _p is not None:
-            try:
-                # Dedicated container = only the canvas inside (ignore text nodes).
-                _kids = [ _n for _n in list(_p.childNodes) if getattr(_n, 'nodeType', 3) == 1 ]
-                if len(_kids) == 1 and _kids[0] is _c:
-                    return _p
-            except Exception:
-                pass
-        return _c
-    except Exception:
-        return None
-
 
 def _url_param(name):
     try:
@@ -2725,146 +2744,106 @@ def _reposition_fullscreen_button():
         pass
 
 def _toggle_fullscreen():
-    # v29: request on the WRAPPER (canvas + controls stay visible), from a
-    # user gesture, handle rejected promise. Do NOT assume success - the
-    # fullscreenchange handler + ResizeObserver will measure the actual layout.
+    _w = _ensure_app_wrapper()
+    if _w is None:
+        return
     try:
+        _fs = document.fullscreenElement
+    except Exception:
+        _fs = None
+    if _fs is not None:
         try:
-            _fs = document.fullscreenElement
+            document.exitFullscreen()
         except Exception:
-            _fs = None
-        if _fs is not None:
-            try:
-                _p = document.exitFullscreen()
-                # exitFullscreen also returns a promise in modern browsers - swallow rejection.
-                try:
-                    if _p is not None and hasattr(_p, 'catch'):
-                        _p.catch(lambda _e: None)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-            return
-        _w = _ensure_app_wrapper()
-        _target = _w if _w is not None else _find_canvas()
-        if _target is None:
-            return
+            pass
+        return
+    try:
+        _p = _w.requestFullscreen()
         try:
-            _p = _target.requestFullscreen()
-            try:
-                if _p is not None and hasattr(_p, 'catch'):
-                    _p.catch(lambda _e: None)
-            except Exception:
-                pass
+            if _p is not None and hasattr(_p, 'catch'):
+                _p.catch(lambda _e: None)
         except Exception:
             pass
     except Exception:
         pass
 
 def _on_fullscreen_change(ev=None):
-    # v54: LOGICAL STAYS runApp SIZE. Canvas scales via CSS only.
-    # User: "logical stays 400x400, canvas just scales up via CSS to fill screen (mouse still 0..400)"
-    # Old code did _c.width = innerWidth (9997) + globals()['__dict__']['_canvas_width'] = 9997
-    # (which didn't even update the real global). That made:
-    #  - HUD: 900 texture drawn onto 9997 viewport = 9997/1800 ~ 5x huge
-    #  - Mouse: _pos mapped to 9997 instead of 400, dots inset 25% on each side
-    #  - Backing: 400 logical drawn 1:1 on 9997 backing = tiny tile, not fullscreen
-    # v58: _canvas_width/_canvas_height NEVER change in fullscreen. canvas.width/height
-    # (backing) NEVER change. Only canvas.style.width/height change, to the
-    # MEASURED fullscreen-element rect (see below), NOT window.innerWidth.
-    # _pos then maps (clientX-left) * logical / rect.width -> 0..logical correctly.
-    # HUD offscreen backing = drawing-buffer size, drawn 1:1.
-    try:
-        try:
-            _is_fs = document.fullscreenElement is not None
-        except Exception:
-            _is_fs = False
-        _c = _find_canvas()
-        if _c is None:
+    _c = _find_canvas()
+    _w = _ensure_app_wrapper()
+    if _c is None or _w is None:
+        return
+    if document.fullscreenElement is _w:
+        _ow = _fullscreen_orig_w
+        _oh = _fullscreen_orig_h
+        _vw = _w.clientWidth or 0
+        _vh = _w.clientHeight or 0
+        if not _vw or not _vh:
+            try:
+                _vw = int(window.innerWidth) or 0
+                _vh = int(window.innerHeight) or 0
+            except Exception:
+                pass
+        if not _vw or not _vh:
+            try:
+                window.requestAnimationFrame(lambda _t: _on_fullscreen_change())
+            except Exception:
+                pass
             return
-        _ow = int(_fullscreen_orig_w) if _fullscreen_orig_w else int(_canvas_width) if _canvas_width else 900
-        _oh = int(_fullscreen_orig_h) if _fullscreen_orig_h else int(_canvas_height) if _canvas_height else 560
-        if _is_fs:
-            try:
-                # v58: size from the MEASURED fullscreen-element rect, NOT
-                # window.innerWidth. innerWidth produced 9997x7354 (stale /
-                # zoom / display-move value) and stretched the canvas to
-                # 9997px wide, overflowing the viewport - clicks then mapped
-                # to an inset band (blue-rectangle screenshot) and the
-                # backing ballooned. getBoundingClientRect() of the element
-                # that is actually fullscreen IS the viewport. If the
-                # fullscreen element is the canvas itself, the browser's
-                # :fullscreen UA styles (width:100% !important) already size
-                # it; setting it to its own rect is a no-op. If it is the
-                # wrapper, the canvas fills the wrapper.
-                try:
-                    _fs_el = document.fullscreenElement
-                except Exception:
-                    _fs_el = None
-                _fw = _fh = 0
-                if _fs_el is not None:
-                    try:
-                        _fr = _fs_el.getBoundingClientRect()
-                        _fw, _fh = int(_fr.width), int(_fr.height)
-                    except Exception:
-                        _fw = _fh = 0
-                if not _fw or not _fh:
-                    _fw, _fh = int(window.innerWidth), int(window.innerHeight)
-                # CSS only - backing stays _ow x _oh.
-                _c.style.width = '%dpx' % _fw; _c.style.height = '%dpx' % _fh
-            except Exception:
-                pass
-        else:
-            try:
-                _c.style.width = '%dpx' % _ow; _c.style.height = '%dpx' % _oh
-            except Exception:
-                pass
-        # _canvas_width/_canvas_height intentionally NOT changed. Backing intentionally NOT changed.
-        try:
-            _reposition_fullscreen_button()
-        except Exception:
-            pass
-        try:
-            _log_canvas_context('fullscreenchange')
-        except Exception:
-            pass
-    except Exception:
-        pass
-
+        _s = min(_vw / _ow, _vh / _oh)
+        _c.style.position = ''
+        _c.style.inset = ''
+        _c.style.margin = '0'
+        _c.style.width = str(int(_ow * _s)) + 'px'
+        _c.style.height = str(int(_oh * _s)) + 'px'
+    else:
+        _c.style.position = ''
+        _c.style.inset = ''
+        _c.style.margin = ''
+        _c.style.width = str(_canvas_width) + 'px'
+        _c.style.height = str(_canvas_height) + 'px'
 
 def _pos(ev):
-    # FIX v27 HUD events: map CSS rect -> logical app size (_canvas_width x
-    # _canvas_height), NOT via backing-store canvas.width / DPR. Old code did
-    # (clientX-left)*canvas.width/r.width/dpr. canvas.width = _canvas_width*dpr
-    # at _size_canvas time, so if DPR changes after sizing (DevTools emulation,
-    # zoom, display move), the division is wrong and clicks drift off the HUD
-    # buttons. Logical size is the same space HUD Rects are drawn in (Rect(40,470,160,44)
-    # means app x=40..200, y=470..514), so this is the space onMousePress expects.
-    # Y is top-down in both: CSS y=0 is top, app y=0 is top, HUD texture V=0 is top
-    # (see engine draw_hud_canvas: top vertex has V=0). No Y flip.
+    # 1. Screen -> CSS offset: dx = ev.clientX - rect.left
+    # 2. Ratio = internal / rendered CSS:
+    #      sx = canvas.width  / rect.width
+    #      sy = canvas.height / rect.height
+    #    rect = canvas.getBoundingClientRect() (rendered CSS, includes
+    #    letterbox / stretch / zoom / scroll / fullscreen)
+    #    canvas.width/height = internal resolution (drawing buffer)
+    # 3. Screen -> internal: x_internal = dx * sx
+    # 4. Internal -> logical: x = x_internal * (_canvas_width / canvas.width)
+    #    Logical is the space draw_* and HUD Rects live in.
     canvas = _find_canvas()
     try:
         r = canvas.getBoundingClientRect()
         if not r.width or not r.height:
             return (0, 0)
-        # v54: logical = runApp size (_fullscreen_orig_w/h), NEVER viewport size.
-        # In fullscreen rect.width = innerWidth (9997), logical must still be 400/900.
-        # Old code used _canvas_width which _on_fullscreen_change had set to 9997,
-        # so _pos returned 0..9997 and dots landed inset 25% on each side.
-        if _fullscreen_orig_w:
-            _lw = float(_fullscreen_orig_w)
-        elif _canvas_width:
-            _lw = float(_canvas_width)
-        else:
-            _lw = 900.0
-        if _fullscreen_orig_h:
-            _lh = float(_fullscreen_orig_h)
-        elif _canvas_height:
-            _lh = float(_canvas_height)
-        else:
-            _lh = 560.0
-        return ((ev.clientX - r.left) * _lw / float(r.width),
-                (ev.clientY - r.top) * _lh / float(r.height))
+        try:
+            _iw = float(canvas.width) or 0.0
+        except Exception:
+            _iw = 0.0
+        try:
+            _ih = float(canvas.height) or 0.0
+        except Exception:
+            _ih = 0.0
+        try:
+            _lw = float(_canvas_width) or _iw or 900.0
+        except Exception:
+            _lw = _iw or 900.0
+        try:
+            _lh = float(_canvas_height) or _ih or 560.0
+        except Exception:
+            _lh = _ih or 560.0
+        if not _iw:
+            _iw = _lw
+        if not _ih:
+            _ih = _lh
+        _sx = _iw / float(r.width)
+        _sy = _ih / float(r.height)
+        _x_internal = (float(ev.clientX) - float(r.left)) * _sx
+        _y_internal = (float(ev.clientY) - float(r.top)) * _sy
+        return (_x_internal * _lw / _iw if _iw else 0.0,
+                _y_internal * _lh / _ih if _ih else 0.0)
     except Exception:
         return (0, 0)
 
@@ -3574,6 +3553,7 @@ def run_app(width=400, height=400, stepsPerSecond=30, renderer=None,
         # Offscreen 2D canvas is created AFTER _size_canvas (needs width/height)
         # but BEFORE the 3D renderer is created, so scs.py can find it.
     _size_canvas(width, height)
+    _ensure_app_wrapper()
     # HUD: create the offscreen 2D canvas NOW, before any 2D drawing happens.
     # scs.py's _ensure_canvas() will return this canvas in HUD mode, so the
     # existing 2D app draws here, unchanged. The 3D renderer composites it.
